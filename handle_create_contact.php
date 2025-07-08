@@ -1,19 +1,27 @@
 <?php
 
+// Загружаем .env
 require_once __DIR__ . '/vendor/autoload.php';
-
-use AmoCRM\Client\AmoCRMApiClient;
 use Dotenv\Dotenv;
-use League\OAuth2\Client\Token\AccessToken;
-use AmoCRM\Models\ContactModel;
-use AmoCRM\Collections\CustomFieldsValuesCollection;
-use AmoCRM\Models\CustomFieldsValues\MultitextCustomFieldValuesModel;
-use AmoCRM\Models\CustomFieldsValues\ValueCollections\MultitextCustomFieldValueCollection;
-use AmoCRM\Models\CustomFieldsValues\ValueModels\MultitextCustomFieldValueModel;
-use AmoCRM\Collections\ContactsCollection;
-use AmoCRM\Enums\EntityTypes;
 
-// Загружаем данные из формы
+$dotenv = Dotenv::createImmutable(__DIR__);
+$dotenv->load();
+
+// Загружаем access_token из token.json
+$tokenFile = __DIR__ . '/token.json';
+
+if (!file_exists($tokenFile)) {
+    exit('❌ Не найден файл token.json. Сначала авторизуйтесь.');
+}
+
+$tokenData = json_decode(file_get_contents($tokenFile), true);
+$accessToken = $tokenData['access_token'] ?? null;
+
+if (!$accessToken) {
+    exit('❌ Не найден access_token.');
+}
+
+// Данные из формы
 $name  = trim($_POST['name'] ?? '');
 $phone = trim($_POST['phone'] ?? '');
 
@@ -21,60 +29,47 @@ if (!$name) {
     exit('❌ Укажите имя.');
 }
 
-// Загружаем переменные окружения
-$dotenv = Dotenv::createImmutable(__DIR__);
-$dotenv->load();
+// Собираем тело запроса
+$data = [
+    [
+        "name" => $name,
+        "custom_fields_values" => [
+            [
+                "field_code" => "PHONE",
+                "values" => [
+                    ["value" => $phone]
+                ]
+            ]
+        ]
+    ]
+];
 
-$clientId     = $_ENV['AMO_CLIENT_ID'];
-$clientSecret = $_ENV['AMO_CLIENT_SECRET'];
-$redirectUri  = $_ENV['AMO_REDIRECT_URI'];
-$baseDomain   = $_ENV['AMO_DOMAIN'];
+// Конвертируем в JSON
+$jsonData = json_encode($data, JSON_UNESCAPED_UNICODE);
 
-$apiClient = new AmoCRMApiClient($clientId, $clientSecret, $redirectUri);
-$apiClient->setAccountBaseDomain($baseDomain);
+// Инициализируем cURL
+$ch = curl_init();
 
-// Загружаем access token
-if (!file_exists(__DIR__ . '/token.json')) {
-    exit('❌ Токен не найден. Сначала авторизуйтесь.');
-}
+curl_setopt_array($ch, [
+    CURLOPT_URL => "https://{$_ENV['AMO_DOMAIN']}/api/v4/contacts",
+    CURLOPT_RETURNTRANSFER => true,
+    CURLOPT_POST => true,
+    CURLOPT_HTTPHEADER => [
+        "Authorization: Bearer $accessToken",
+        "Content-Type: application/json"
+    ],
+    CURLOPT_POSTFIELDS => $jsonData,
+]);
 
-$tokenData   = json_decode(file_get_contents(__DIR__ . '/token.json'), true);
-$accessToken = new AccessToken($tokenData);
-$apiClient->setAccessToken($accessToken);
+$response = curl_exec($ch);
+$httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
 
-// 🟢 5. Получаем enum_id для телефона (например, "WORK")
-$customFieldsService = $apiClient->customFields('contacts');
-$contactFields = $customFieldsService->get();
-// foreach ($contactFields as $field) {
-//     echo "Название: " . $field->getName() . " — Код: " . $field->getCode() . PHP_EOL;
-// }
+curl_close($ch);
 
-
-
-try {
-    $contact = new ContactModel();
-    $contact->setName($name);
-
-    if ($phone) {
-    $phoneValue = new MultitextCustomFieldValueModel();
-    $phoneValue->setValue($phone);
-    // НЕ вызываем $phoneValue->setEnumId()
-
-    $phoneField = new MultitextCustomFieldValuesModel();
-    $phoneField->setFieldCode('PHONE');
-    $phoneField->setValues(
-        (new MultitextCustomFieldValueCollection())
-        ->add($phoneValue)
-    );
-
-    $contact->setCustomFieldsValues(
-        new CustomFieldsValuesCollection([$phoneField])
-    );
-}
-
-    $contact = $apiClient->contacts()->addOne($contact);
-
-    echo "✅ Контакт успешно создан! ID: " . $contact->getId();
-} catch (Throwable $e) {
-    echo "❌ Ошибка: " . $e->getMessage();
+// Обработка результата
+if ($httpCode === 200 || $httpCode === 202) {
+    echo "✅ Контакт успешно создан!";
+} else {
+    echo "❌ Ошибка. HTTP $httpCode\n";
+    echo "Ответ: $response";
 }
